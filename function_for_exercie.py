@@ -8,6 +8,7 @@ import os
 import numpy as np
 import warnings
 from scipy.ndimage import median_filter
+from sklearn.cluster import KMeans
 
 # Suppress RuntimeWarning
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -51,7 +52,7 @@ def clip_image_to_aoi(image_path,aoi_to_clip):
     return clipped_image_path
 
 
-def speckle_filter(image_path):
+def speckle_filter(image_path,window_size):
     """
     This recieves an image an applies a median filter
     """
@@ -60,7 +61,7 @@ def speckle_filter(image_path):
         profile = src.profile.copy()
 
     # Apply the median filter
-    filtered_image = median_filter(image, size=5)
+    filtered_image = median_filter(image, size=window_size)
 
     # Get filename of the original file 
     file_name = os.path.basename(image_path)
@@ -73,27 +74,49 @@ def speckle_filter(image_path):
 
     return filtered_image_path
 
-def get_water_mask(image_path, water_threshold):
+def count_water_extent(image_path):
     """
-    This recieves an image an using a user given threshold calculates the part that corrsponds to water
+    This funcitons count the non-zero pixels of the image, that corresponds to water
     """
     with rasterio.open(image_path) as src:
         image = src.read(1)
-        # Convert the image mask to a bitmask where water pixels are set to 1 and non-water pixels are set to 0
-        water_mask = np.where(image <= water_threshold, 1, 0)
-        bitmask = water_mask.astype('uint8')
-        # Get the metadata from the source image
-        profile = src.profile
  
-    water_pixels = np.count_nonzero(bitmask)  # Count the number of water pixels
+    water_pixels = np.count_nonzero(image)  # Count the number of water pixels
     area_km2 = (water_pixels * 10 * 10) / 1e6 # Assume square pixels of 10 by 10 meters
 
+
+    return area_km2
+
+
+def kmeans_cluster(image_path, n_clusters):
+
+    """
+    Perform K-means clustering on a SAR image and save the classified image.
+    """
+
+    # Open the SAR image file
+    with rasterio.open(image_path) as src:
+        # Read the image data as a numpy array
+        sar_image = src.read(1)
+        # Get the metadata from the source image
+        profile = src.profile
+        
+    # Reshape the SAR image to 2D array
+    height, width = sar_image.shape[:2]
+    sar_image_2d = sar_image.reshape(height * width, -1)
+
+    # Perform clustering
+    kmeans = KMeans(n_clusters=n_clusters, random_state=0)
+    labels = kmeans.fit_predict(sar_image_2d)
+
+    # Reshape the labels back to the original image shape
+    labels_2d = labels.reshape(height, width)
+    
     # Get filename of the original file 
     file_name = os.path.basename(image_path)
+    # Save the image classified 
+    image_classified_path = os.path.join('output','_'.join(['water_classification',file_name]))
+    with rasterio.open(image_classified_path, 'w', **profile) as dst:
+        dst.write(labels_2d, 1)  # Use band index 1
 
-    # Save the bitmask 
-    bitmask_path = os.path.join('output','_'.join(['water_bitmask',file_name]))
-    with rasterio.open(bitmask_path, 'w', **profile) as dst:
-        dst.write(bitmask, 1)  # Use band index 1
-
-    return bitmask_path,area_km2
+    return image_classified_path
